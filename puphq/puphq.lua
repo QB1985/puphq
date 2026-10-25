@@ -78,6 +78,7 @@ local defaults = T{
     deploy = false,
     minimized = true, mini_scale = 1.0, mini_alpha = 1.0,
     main_h = 0,
+    keep_zone = false,
     mini_x = -1, mini_y = -1,                                        -- where the minimized bar sits (-1 = not placed yet)                              -- the minimized bar's size: 1x (smallest) to 3x
     cmds_open = false,
     oil_off = {},                                                    -- oil kinds ticked off (Auto Repair ignores them)
@@ -554,7 +555,11 @@ local function tick()
     local now = os.clock();
 
     st.pet, st.paused, st.resting = nil, nil, false;
-    if player:GetIsZoning() ~= 0 then st.enabled = false; return false; end
+    if player:GetIsZoning() ~= 0 then
+        if cfg.keep_zone == true and st.enabled then st.zoned = true; else st.enabled = false; end   -- (stays on through the zone if asked to)
+        return false;
+    end
+    if st.zoned then st.zoned, st.grace = false, now + 20; end       -- (the puppet takes a moment to show up again)
 
     local me   = party:GetMemberTargetIndex(0);
     local pet  = ent:GetPetTargetIndex(me) or 0;
@@ -570,9 +575,13 @@ local function tick()
     if st.busy then return true; end                                 -- (the attachment change is in charge)
 
     -- Stays Disabled in a town, off PUP, with no puppet out, or when dead
-    if zone == nil or Towns:contains(zone) or st.pet == nil or player:GetMainJob() ~= PUP_JOB or party:GetMemberHPPercent(0) < 1 then
+    if st.pet ~= nil then st.grace = nil; end
+    local waiting = (st.pet == nil and st.grace ~= nil and now < st.grace and st.enabled);
+    if zone == nil or Towns:contains(zone) or (st.pet == nil and not waiting) or player:GetMainJob() ~= PUP_JOB or party:GetMemberHPPercent(0) < 1 then
         st.enabled = false;
+        st.grace = nil;
     end
+    if waiting and st.enabled then return true; end                  -- (just after a zone: wait for the puppet, do nothing yet)
 
     -- Auto Light: no change to your choices, the override just comes and goes with the pet's HP
     if st.pet and (tonumber(cfg.light_lo) or 0) > 0 then
@@ -1188,6 +1197,7 @@ local function draw_ui()
         row_slider('##ph_lhi', 'Back above', 'light_hi', 0, 100, 1, '%d%%',
             'At this pet HP% Maneuver 1 goes back to what you picked.');
         if cfg.light_hi < cfg.light_lo then cfg.light_hi = cfg.light_lo; end
+        row_switch('##ph_keep', 'Stay on in zones', 'keep_zone', 'Keep the addon enabled when you zone, unless the new zone is a town or city.');
         row_switch('##ph_dep', 'Auto Deploy', 'deploy', 'Deploy your puppet when you are fighting and it is idle.');
 
         local pv_w = 14 + 6 + imgui.CalcTextSize('Preview');
