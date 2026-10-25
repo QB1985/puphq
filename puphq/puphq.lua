@@ -1,6 +1,6 @@
 addon.name      = 'PUPHQ';
 addon.author    = 'KS1985';
-addon.version   = '2.10';
+addon.version   = '1.0.0';
 addon.desc      = 'Puppetmaster control panel. Based on Puphelper by GetAwayCoxn, restyled after YunaUI (dark violet panel, pill choices, glowing bars).';
 addon.link      = 'https://github.com/QB1985/puphq';
 
@@ -1460,6 +1460,33 @@ local function att_list(s)
     dl0:AddLine({ hx + tw + 14, hy + lh / 2 }, { hx + ROW_W - ew - 26, hy + lh / 2 }, u32({ 1, 1, 1, 0.08 }), 1);
     imgui.Dummy({ ROW_W, lh + 2 });
 
+    -- filter by element: the eight circles, and a grey one at the end that shows everything again
+    do
+        local fx, fy = imgui.GetCursorScreenPos();
+        dl0:AddText({ fx, fy }, u32(C.muted), 'Filter by element');
+        imgui.Dummy({ ROW_W, lh + 2 });
+        local cx0, cy0 = imgui.GetCursorScreenPos();
+        local step, r = 26, 6;
+        for i = 1, 9 do
+            local cx, cy = cx0 + 8 + (i - 1) * step, cy0 + 9;
+            imgui.SetCursorScreenPos({ cx - 11, cy0 });
+            local clicked = imgui.InvisibleButton('##ph_flt' .. i, { 22, 18 });
+            local hov = imgui.IsItemHovered();
+            local key = (i <= 8) and AEL[i][2] or nil;
+            local chosen = (i <= 8 and st.att_filter == i) or (i == 9 and st.att_filter == nil);
+            if i <= 8 then
+                el_dot(dl0, cx, cy, key, r, (st.att_filter == nil or chosen) and 1 or 0.35);
+            else
+                el_dot(dl0, cx, cy, nil, r, chosen and 0.55 or 0.9);
+            end
+            if chosen and i <= 8 then dl0:AddCircle({ cx, cy }, r + 3.5, u32({ 1, 1, 1, 0.8 }), 20, 1.5); end
+            if hov then dl0:AddCircle({ cx, cy }, r + 3.5, u32({ 1, 1, 1, 0.35 }), 20, 1); tip(i <= 8 and ('Only ' .. AEL[i][1]) or 'Show all'); end
+            if clicked then st.att_filter = (i <= 8) and ((st.att_filter == i) and nil or i) or nil; end
+        end
+        imgui.SetCursorScreenPos({ cx0, cy0 });
+        imgui.Dummy({ ROW_W, 20 });
+    end
+
     local pv = 0;
     if ImGuiStyleVar_WindowPadding ~= nil then imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, { 0, 0 }); pv = 1; end
     local okc = imgui.BeginChild('##ph_att_list', { ROW_W, ATT_LIST_H }, false);
@@ -1486,7 +1513,7 @@ local function att_list(s)
                 local itemid = 0x2100 + id;
                 local info = item_info(itemid);
                 local cost = ATT_COST[id];
-                if info and cost then
+                if info and cost and (st.att_filter == nil or cost[1] == st.att_filter) then
                     local key = AEL[cost[1]][2];
                     local rx, ry = imgui.GetCursorScreenPos();
                     local on = list_index(s.att, id) ~= nil;
