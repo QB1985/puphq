@@ -1,6 +1,6 @@
 addon.name      = 'PUPHQ';
 addon.author    = 'KS1985';
-addon.version   = '1.0.0';
+addon.version   = '1.0.1';
 addon.desc      = 'Puppetmaster control panel. Based on Puphelper by GetAwayCoxn, restyled after YunaUI (dark violet panel, pill choices, glowing bars).';
 addon.link      = 'https://github.com/QB1985/puphq';
 
