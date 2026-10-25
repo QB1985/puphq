@@ -1947,13 +1947,15 @@ local function draw_mini()
 
         -- status light: green while Enabled, red while Disabled
         local lx, ly = imgui.GetCursorScreenPos();
-        imgui.Dummy({ 8 * k, 8 * k });
-        if imgui.IsItemHovered() then tip(st.enabled and 'Enabled' or 'Disabled'); end
+        local lt_clicked = imgui.InvisibleButton('##ph_mini_light', { 8 * k, 8 * k });
+        local lt_hov = imgui.IsItemHovered();
+        if lt_clicked then st.enabled = not st.enabled; end
+        if lt_hov then tip((st.enabled and 'Enabled' or 'Disabled') .. ' (click to ' .. (st.enabled and 'disable' or 'enable') .. ')'); end
         local lc = st.enabled and { 0.35, 0.92, 0.50 } or { 1.00, 0.30, 0.35 };
         local lcx, lcy = lx + 4 * k, ly + 4 * k;
         dl:AddCircleFilled({ lcx, lcy }, 4.5 * k, u32({ lc[1], lc[2], lc[3], 0.22 }), 16);
         dl:AddCircleFilled({ lcx, lcy }, 3 * k, u32({ lc[1], lc[2], lc[3], 1 }), 16);
-        dl:AddCircle({ lcx, lcy }, 3 * k, u32({ 1, 1, 1, 0.22 }), 16, 1);
+        dl:AddCircle({ lcx, lcy }, 3 * k, u32({ 1, 1, 1, lt_hov and 0.8 or 0.22 }), 16, lt_hov and 1.5 or 1);
         imgui.SameLine();
 
         local sw_clicked, sw_hov = mini_switch('##ph_mini_dep', cfg.deploy == true, k);
