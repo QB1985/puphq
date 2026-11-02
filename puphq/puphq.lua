@@ -1,6 +1,6 @@
 addon.name      = 'PUPHQ';
 addon.author    = 'KS1985';
-addon.version   = '1.0.1';
+addon.version   = '1.0.2';
 addon.desc      = 'Puppetmaster control panel. Based on Puphelper by GetAwayCoxn, restyled after YunaUI (dark violet panel, pill choices, glowing bars).';
 addon.link      = 'https://github.com/QB1985/puphq';
 
@@ -20,6 +20,7 @@ local Towns = T{'Tavnazian Safehold','Al Zahbi','Aht Urhgan Whitegate','Nashmau'
 -- 0..7 are the elements (the combo order of the old addon: None, Dark, Light, ...); -1 is None
 local ELEMENTS  = { 'Dark', 'Light', 'Earth', 'Wind', 'Fire', 'Ice', 'Thunder', 'Water' };
 local OILS       = { 'Automaton Oil +3', 'Automaton Oil +2', 'Automaton Oil +1', 'Automaton Oil' };   -- best first
+local OIL_BAGS   = { 0, 8, 10, 11, 12, 13, 14, 15, 16 };                -- inventory, Wardrobe 1 to 8
 local OIL_FALLBACK = { ['Automaton Oil +3'] = 19185, ['Automaton Oil +2'] = 18733, ['Automaton Oil +1'] = 18732, ['Automaton Oil'] = 18731 };                -- (used only if the name lookup finds nothing)
 local PUP_JOB   = 18;
 local CMD_GAP   = 1.0;                                               -- seconds between two commands sent by the addon
@@ -143,16 +144,20 @@ local function find_oil_ids()                                         -- item id
     end
 end
 
--- Counts your oils (inventory only): the total, and the best tier you have with how many of it
+-- Counts your oils (inventory and Mog Wardrobes 1 to 8): the total, and the best tier you have with how many of it
 local function count_oils()
     if oil_ids == nil then find_oil_ids(); end
     local by_id = {};
     for _, name in ipairs(OILS) do if oil_ids[name] then by_id[oil_ids[name]] = name; end end
     local counts = {};
     local inv = AshitaCore:GetMemoryManager():GetInventory();
-    for i = 0, 80 do                                                 -- 0 = the real inventory only
-        local item = inv:GetContainerItem(0, i);
-        if item ~= nil and by_id[item.Id] then counts[by_id[item.Id]] = (counts[by_id[item.Id]] or 0) + item.Count; end
+    for _, c in ipairs(OIL_BAGS) do                                  -- the inventory and the Mog Wardrobes
+        local max = 80;
+        pcall(function () max = inv:GetContainerCountMax(c) or 80; end);
+        for i = 0, math.min(max, 80) do
+            local item = inv:GetContainerItem(c, i);
+            if item ~= nil and by_id[item.Id] then counts[by_id[item.Id]] = (counts[by_id[item.Id]] or 0) + item.Count; end
+        end
     end
     local total, best, best_n = 0, nil, 0;
     for _, name in ipairs(OILS) do
@@ -170,6 +175,28 @@ local function oils_usable()
         if not (type(cfg.oil_off) == 'table' and cfg.oil_off[name]) then n = n + ((st.oil_counts or {})[name] or 0); end
     end
     return n;
+end
+
+-- The oil kind in the Ammo slot right now (nil if there is none): Repair uses the oil you have equipped
+local function equipped_oil()
+    local ok, name = pcall(function ()
+        local inv = AshitaCore:GetMemoryManager():GetInventory();
+        local eq = inv:GetEquippedItem(3);                           -- 3 = Ammo
+        if eq == nil or eq.Index == 0 then return nil; end
+        local item = inv:GetContainerItem(bit.rshift(bit.band(eq.Index, 0xFF00), 8), bit.band(eq.Index, 0x00FF));
+        if item == nil or item.Id == 0 or item.Id == 65535 then return nil; end
+        for _, n in ipairs(OILS) do if oil_ids and oil_ids[n] == item.Id then return n; end end
+        return nil;
+    end);
+    return ok and name or nil;
+end
+
+-- The best oil kind that is ticked and that you carry (in the bag or a wardrobe)
+local function best_usable_oil()
+    for _, name in ipairs(OILS) do
+        if not (type(cfg.oil_off) == 'table' and cfg.oil_off[name]) and ((st.oil_counts or {})[name] or 0) > 0 then return name; end
+    end
+    return nil;
 end
 
 -- Every ability recast in one pass: { [ability name] = timer }. Maneuvers share one timer that the resource lookup
@@ -615,10 +642,21 @@ local function tick()
         st.last_cmd = now;
     end
 
-    -- 1) Repair (the game uses the best oil you carry; the addon only needs one; not while resting)
+    -- 1) Repair (the best ticked oil is put in the Ammo slot first; not while resting)
     if (tonumber(cfg.repair) or 0) > 0 and not st.resting and (rc['Repair'] or 0) == 0 and oils_usable() > 0 and st.pet.hp * 100 < cfg.repair then
         local dist = math.sqrt(tonumber(ent:GetDistance(st.pet.idx)) or 0);      -- (GetDistance is squared)
-        if dist < 20 then send('/ja "Repair" <me>'); return true; end
+        if dist < 20 then
+            -- Repair uses the oil in the Ammo slot, so the best oil is put there first (it can come from a wardrobe)
+            local best, worn = best_usable_oil(), equipped_oil();
+            if best ~= nil and worn ~= best then
+                if now - (st.oil_equip_at or 0) > 3 then
+                    st.oil_equip_at = now;
+                    send('/equip ammo "' .. best .. '"');
+                end
+                return true;                                         -- (Repair goes out once the oil is on)
+            end
+            send('/ja "Repair" <me>'); return true;
+        end
     end
 
     -- 2) Deploy: you are fighting, the puppet is idle, and the mob isn't about to die
@@ -1145,7 +1183,7 @@ local function oil_block()
         local hov = imgui.IsItemHovered();
         if type(cfg.oil_off) ~= 'table' then cfg.oil_off = {}; end
         if clicked then cfg.oil_off[name] = (not cfg.oil_off[name]) or nil; save(); end
-        if hov then tip('Tick = Auto Repair may count on this oil. If none of the ticked kinds are in your inventory, it will not fire. (The game decides which oil a Repair actually uses.)'); end
+        if hov then tip('Tick = Auto Repair may count on this oil. If none of the ticked kinds are in your inventory or wardrobes, it will not fire. (The game decides which oil a Repair actually uses.)'); end
         local on = not cfg.oil_off[name];
         local cx, cy, half = x + 11, y + h / 2, 6;
         dl:AddRectFilled({ cx - half, cy - half }, { cx + half, cy + half }, u32(on and { NEON[1] * 0.42, NEON[2] * 0.42, NEON[3] * 0.42, 1 } or (hov and { 0.15, 0.14, 0.19, 1 } or { 0.10, 0.09, 0.13, 1 })), 4);
@@ -1165,7 +1203,7 @@ local function oil_block()
     dl:AddLine({ x, y + 1 }, { x + ROW_W, y + 1 }, u32({ 1, 1, 1, 0.08 }), 1);
     local total = tostring(st.oils or 0);
     local tw = imgui.CalcTextSize(total);
-    dl:AddText({ x + 26, y + 3 }, u32(C.text), 'Total in inventory');
+    dl:AddText({ x + 26, y + 3 }, u32(C.text), 'Total (bag + wardrobes)');
     dl:AddText({ x + ROW_W - tw - 2, y + 3 }, u32((st.oils or 0) > 0 and { C.gold[1], C.gold[2], C.gold[3], 1 } or { 1, 0.55, 0.65, 1 }), total);
 end
 
