@@ -150,13 +150,18 @@ local function count_oils()
     local by_id = {};
     for _, name in ipairs(OILS) do if oil_ids[name] then by_id[oil_ids[name]] = name; end end
     local counts = {};
+    st.oil_loc = {};                                                 -- where each kind was found first: bag and slot
     local inv = AshitaCore:GetMemoryManager():GetInventory();
     for _, c in ipairs(OIL_BAGS) do                                  -- the inventory and the Mog Wardrobes
         local max = 80;
         pcall(function () max = inv:GetContainerCountMax(c) or 80; end);
         for i = 0, math.min(max, 80) do
             local item = inv:GetContainerItem(c, i);
-            if item ~= nil and by_id[item.Id] then counts[by_id[item.Id]] = (counts[by_id[item.Id]] or 0) + item.Count; end
+            if item ~= nil and by_id[item.Id] then
+                local nm = by_id[item.Id];
+                counts[nm] = (counts[nm] or 0) + item.Count;
+                if st.oil_loc[nm] == nil then st.oil_loc[nm] = { c, i }; end
+            end
         end
     end
     local total, best, best_n = 0, nil, 0;
@@ -179,16 +184,21 @@ end
 
 -- The oil kind in the Ammo slot right now (nil if there is none): Repair uses the oil you have equipped
 local function equipped_oil()
-    local ok, name = pcall(function ()
+    local ok, name, info = pcall(function ()
         local inv = AshitaCore:GetMemoryManager():GetInventory();
         local eq = inv:GetEquippedItem(3);                           -- 3 = Ammo
-        if eq == nil or eq.Index == 0 then return nil; end
-        local item = inv:GetContainerItem(bit.rshift(bit.band(eq.Index, 0xFF00), 8), bit.band(eq.Index, 0x00FF));
-        if item == nil or item.Id == 0 or item.Id == 65535 then return nil; end
-        for _, n in ipairs(OILS) do if oil_ids and oil_ids[n] == item.Id then return n; end end
-        return nil;
+        if eq == nil then return nil, 'no equipment entry'; end
+        if eq.Index == 0 then return nil, 'ammo slot empty (index 0)'; end
+        local cont, idx = bit.rshift(bit.band(eq.Index, 0xFF00), 8), bit.band(eq.Index, 0x00FF);
+        local item = inv:GetContainerItem(cont, idx);
+        if item == nil then return nil, string.format('raw %d -> bag %d slot %d: no item', eq.Index, cont, idx); end
+        local desc = string.format('raw %d -> bag %d slot %d: item id %d', eq.Index, cont, idx, item.Id);
+        if oil_ids == nil then find_oil_ids(); end
+        for _, n in ipairs(OILS) do if oil_ids[n] == item.Id then return n, desc; end end
+        return nil, desc .. ' (not an oil)';
     end);
-    return ok and name or nil;
+    if not ok then return nil, 'error: ' .. tostring(name); end
+    return name, info;
 end
 
 -- The best oil kind that is ticked and that you carry (in the bag or a wardrobe)
@@ -215,6 +225,44 @@ local function recast_map()
     end
     return out;
 end
+
+-- /puphq debug: what Auto Repair sees right now, in the chat log
+local function say(msg) print(chat.header(addon.name):append(chat.message(msg))); end
+local function repair_report()
+    local mm = AshitaCore:GetMemoryManager();
+    local inv = mm:GetInventory();
+    local names = { [0] = 'Inventory', [8] = 'Wardrobe 1', [10] = 'Wardrobe 2', [11] = 'Wardrobe 3', [12] = 'Wardrobe 4', [13] = 'Wardrobe 5', [14] = 'Wardrobe 6', [15] = 'Wardrobe 7', [16] = 'Wardrobe 8' };
+    if oil_ids == nil then find_oil_ids(); end
+    local ids = {};
+    for _, n in ipairs(OILS) do ids[#ids + 1] = n .. '=' .. tostring(oil_ids[n]); end
+    say('Oil ids: ' .. table.concat(ids, ', '));
+    for _, c in ipairs(OIL_BAGS) do
+        local found = {};
+        local ok, max = pcall(function () return inv:GetContainerCountMax(c) or -1; end);
+        if ok and max > 0 then
+            for i = 0, math.min(max, 80) do
+                local item = inv:GetContainerItem(c, i);
+                if item ~= nil then
+                    for _, n in ipairs(OILS) do if oil_ids[n] == item.Id then found[#found + 1] = n .. ' x' .. item.Count; end end
+                end
+            end
+        end
+        say(string.format('%s (size %s): %s', names[c] or tostring(c), ok and tostring(max) or '?', #found > 0 and table.concat(found, ', ') or 'no oil'));
+    end
+    local eq = inv:GetEquippedItem(3);
+    local line = 'Ammo slot: nothing';
+    if eq ~= nil and eq.Index ~= 0 then
+        local cont, idx = bit.rshift(bit.band(eq.Index, 0xFF00), 8), bit.band(eq.Index, 0x00FF);
+        local item = inv:GetContainerItem(cont, idx);
+        line = string.format('Ammo slot: raw index %d (bag %d, slot %d), item id %s', eq.Index, cont, idx, item and tostring(item.Id) or '?');
+    end
+    say(line);
+    local rc = recast_map();
+    say(string.format('Best usable oil: %s; wearing: %s; Repair recast: %s; threshold %s%%; pet %s; enabled %s; resting %s; paused %s',
+        tostring(best_usable_oil()), tostring((equipped_oil())), tostring(rc['Repair'] or 0), tostring(cfg.repair),
+        st.pet and string.format('%d%%', st.pet.hp * 100) or 'none', tostring(st.enabled), tostring(st.resting), tostring(st.paused)));
+end
+
 
 local buff_names = {};
 local function buff_name(id)
@@ -647,15 +695,32 @@ local function tick()
         local dist = math.sqrt(tonumber(ent:GetDistance(st.pet.idx)) or 0);      -- (GetDistance is squared)
         if dist < 20 then
             -- Repair uses the oil in the Ammo slot, so the best oil is put there first (it can come from a wardrobe)
-            local best, worn = best_usable_oil(), equipped_oil();
+            local best = best_usable_oil();
+            local worn, why = equipped_oil();
             if best ~= nil and worn ~= best then
                 if now - (st.oil_equip_at or 0) > 3 then
                     st.oil_equip_at = now;
+                    -- the equip packet (0x50: slot in the bag, the Ammo slot, which bag), then the command as well
+                    local loc = st.oil_loc and st.oil_loc[best];
+                    if loc then
+                        pcall(function ()
+                            AshitaCore:GetPacketManager():QueuePacket(0x50, 0x08, 0x00, 0x00, 0x00, function (ptr)
+                                local pk = ffi.cast('uint8_t*', ptr);
+                                pk[0x04], pk[0x05], pk[0x06] = loc[2], 3, loc[1];
+                            end);
+                        end);
+                    end
+                    -- the command, with the full name and with the short name the menus show; this is the same for every oil kind
+                    local short = best:gsub('Automaton', 'Automat.');
                     send('/equip ammo "' .. best .. '"');
+                    send('/equip ammo "' .. short .. '"');
+                    if st.dbg then say('Repair: equipping ' .. best .. ' (also as "' .. short .. '"; wearing ' .. tostring(worn) .. '; ' .. tostring(why) .. ')'); end
                 end
                 return true;                                         -- (Repair goes out once the oil is on)
             end
-            send('/ja "Repair" <me>'); return true;
+            send('/ja "Repair" <me>');
+            if st.dbg then say('Repair: sent (wearing ' .. tostring(worn) .. '; ' .. tostring(why) .. ')'); end
+            return true;
         end
     end
 
@@ -2151,6 +2216,10 @@ ashita.events.register('command', 'puphq_command', function (e)
         else cfg.deploy = not (cfg.deploy == true); end
         save();
         print(chat.header(addon.name):append(chat.message('Auto Deploy: ' .. (cfg.deploy and 'ON' or 'OFF'))));
+    elseif sub == 'debug' then                                       -- what Auto Repair sees; 'debug' again turns the live messages off
+        st.dbg = not st.dbg;
+        say('Debug messages ' .. (st.dbg and 'ON (Repair attempts are printed)' or 'OFF'));
+        if st.dbg then pcall(repair_report); end
     elseif sub == 'toggle' then
         st.enabled = not st.enabled;
     elseif sub == 'manset' then                                      -- /puphq manset next | prev | 1 | 2 | 3
