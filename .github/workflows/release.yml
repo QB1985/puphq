@@ -1,0 +1,54 @@
+name: Release
+
+# When main has a version in puphq/puphq.lua that has no tag yet, tag it and publish a release.
+# The release text is RELEASE_NOTES_v<version>.md if that file exists, otherwise generated notes.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read the version
+        id: ver
+        run: |
+          v=$(sed -n "s/^addon.version *= *'\([^']*\)';.*/\1/p" puphq/puphq.lua | head -n1)
+          if [ -z "$v" ]; then echo "No version found"; exit 1; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "tag=v$v" >> "$GITHUB_OUTPUT"
+
+      - name: Is it already released?
+        id: exists
+        run: |
+          if git rev-parse -q --verify "refs/tags/${{ steps.ver.outputs.tag }}" >/dev/null; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Zip the addon
+        if: steps.exists.outputs.found == 'false'
+        run: zip -r "puphq-${{ steps.ver.outputs.tag }}.zip" puphq
+
+      - name: Create the release
+        if: steps.exists.outputs.found == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="RELEASE_NOTES_${{ steps.ver.outputs.tag }}.md"
+          if [ -f "$notes" ]; then
+            gh release create "${{ steps.ver.outputs.tag }}" "puphq-${{ steps.ver.outputs.tag }}.zip" \
+              --target "${{ github.sha }}" --title "PUPHQ ${{ steps.ver.outputs.version }}" --notes-file "$notes"
+          else
+            gh release create "${{ steps.ver.outputs.tag }}" "puphq-${{ steps.ver.outputs.tag }}.zip" \
+              --target "${{ github.sha }}" --title "PUPHQ ${{ steps.ver.outputs.version }}" --generate-notes
+          fi
