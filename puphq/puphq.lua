@@ -1,6 +1,6 @@
 addon.name      = 'PUPHQ';
 addon.author    = 'KS1985';
-addon.version   = '1.0.2';
+addon.version   = '1.0.3';
 addon.desc      = 'Puppetmaster control panel. Based on Puphelper by GetAwayCoxn, restyled after YunaUI (dark violet panel, pill choices, glowing bars).';
 addon.link      = 'https://github.com/QB1985/puphq';
 
@@ -80,6 +80,7 @@ local defaults = T{
     minimized = true, mini_scale = 1.0, mini_alpha = 1.0,
     main_h = 0,
     keep_zone = false,
+    ol_on = false, ol_set = 2, ol_exit = 0, ol_tick = 3,           -- overload set: on/off, which set, switch back below this chance, seconds per burden degree lost
     mini_x = -1, mini_y = -1,                                        -- where the minimized bar sits (-1 = not placed yet)                              -- the minimized bar's size: 1x (smallest) to 3x
     cmds_open = false,
     oil_off = {},                                                    -- oil kinds ticked off (Auto Repair ignores them)
@@ -621,6 +622,81 @@ end
 
 
 ----------------------------------------------------------------------------------------------------
+-- Burden: the game prints "<pet>'s <Element> Maneuver overload chance is N%." every time a maneuver goes on. That figure is
+-- what is shown (and counted down between readings), and what the overload set goes by.
+----------------------------------------------------------------------------------------------------
+st.bur = {};                                                         -- [element name] = { pct = last reading, at = when }
+
+local function burden_now(el)
+    local b = st.bur[el];
+    if b == nil then return 0; end
+    local per = math.max(1, tonumber(cfg.ol_tick) or 3);
+    return math.max(0, b.pct - (os.clock() - b.at) / per);           -- one degree (one % of chance) lost every `per` seconds
+end
+
+-- Is the Overload effect on the puppet / Overdrive (set from the chat log; they time out in case a message is missed)
+local function is_overloaded()
+    return st.ovl ~= nil and st.pet ~= nil and os.clock() - st.ovl < 180;
+end
+local function is_overdriven()
+    return st.od ~= nil and st.pet ~= nil and os.clock() < st.od;
+end
+
+local function burden_max()
+    local m = 0;
+    for _, el in ipairs(ELEMENTS) do m = math.max(m, burden_now(el)); end
+    return m;
+end
+
+-- How many maneuvers are on you
+local function maneuver_total(player)
+    local n = 0;
+    for _, id in pairs(player:GetBuffs()) do
+        if id ~= nil and id > 0 and id ~= 255 then
+            local name = buff_name(id);
+            if name ~= nil and name:find(' Maneuver$') then n = n + 1; end
+        end
+    end
+    return n;
+end
+
+-- The overload set: switched to when the puppet overloads, and back once the burden is down again
+local function overload_start(why)
+    st.ovl = os.clock();                                             -- (the bar shows it whatever the settings)
+    if not cfg.ol_on or st.ol_active then return; end
+    local target = math.floor(tonumber(cfg.ol_set) or 2);
+    if target < 1 or target > NSETS then return; end
+    st.ol_active, st.ol_prev = true, tonumber(cfg.set) or 1;
+    st.ol_effect, st.ol_at = true, os.clock();                       -- (the Overload effect itself is on until the game says it wore off)
+    if target ~= st.ol_prev then switch_set(target); end
+    print(chat.header(addon.name):append(chat.message('Overloaded (' .. why .. '): maneuver set ' .. target .. ' is on until the burden drops below ' .. tostring(cfg.ol_exit) .. '%.')));
+end
+
+local function overload_check(player)
+    local total = maneuver_total(player);
+    if st.pet == nil then
+        st.bur, st.ol_active, st.ol_total, st.ovl, st.od = {}, false, nil, nil, nil;   -- (no puppet, no burden)
+        return;
+    end
+    -- every maneuver gone at once while there was a burden: that is an overload (not the maneuvers running out one by one)
+    if (st.ol_total or 0) > 0 and total == 0 and burden_max() > 0 and not is_overloaded() then overload_start('maneuvers wiped'); end
+    if cfg.ol_on then
+        if st.ol_active then
+            if (tonumber(cfg.set) or 1) ~= math.floor(tonumber(cfg.ol_set) or 2) and (tonumber(cfg.set) or 1) ~= st.ol_prev then
+                st.ol_active = false;                                -- (you picked a set yourself: leave it be)
+            elseif (not st.ol_effect or os.clock() - (st.ol_at or 0) > 180) and burden_max() <= (tonumber(cfg.ol_exit) or 0) then
+                st.ol_active = false;
+                if (tonumber(cfg.set) or 1) ~= st.ol_prev then switch_set(st.ol_prev); end
+                print(chat.header(addon.name):append(chat.message('Burden is down: back to maneuver set ' .. st.ol_prev .. '.')));
+            end
+        end
+    else
+        st.ol_active = false;
+    end
+    st.ol_total = total;
+end
+
+----------------------------------------------------------------------------------------------------
 -- The work (every frame, before and apart from the window)
 -- Returns false while zooming (the window hides then)
 ----------------------------------------------------------------------------------------------------
@@ -643,6 +719,8 @@ local function tick()
     if pet ~= 0 then
         st.pet = { idx = pet, name = ent:GetName(pet) or '', hp = (ent:GetHPPercent(pet) or 0) / 100, mp = (player:GetPetMPPercent() or 0) / 100, tp = (player:GetPetTP() or 0) };
     end
+
+    pcall(overload_check, player);
 
     -- Oils change slowly: count them once a second
     if now - st.oils_at > 1 then st.oils, st.oil_best, st.oil_n, st.oil_counts = count_oils(); st.oils_at = now; end
@@ -1288,6 +1366,42 @@ local function draw_ui()
         row_pick('##ph_m1', 'Maneuver 1', 'm1', MAN_OPTS, 'The first one. Auto Light below takes this slot over when your puppet is hurt.');
         row_pick('##ph_m2', 'Maneuver 2', 'm2', MAN_OPTS);
         row_pick('##ph_m3', 'Maneuver 3', 'm3', MAN_OPTS, 'Pick the same one twice (or three times) to keep two (or three) of it up.');
+
+        do
+            section('Overload');
+            local dl = imgui.GetWindowDrawList();
+            local lh2 = imgui.GetTextLineHeight();
+            local shown = 0;
+            local pick = { [cfg.m1] = true, [cfg.m2] = true, [cfg.m3] = true };
+            for i, el in ipairs(ELEMENTS) do
+                local v = burden_now(el);
+                if v >= 0.5 or (pick[i - 1] and st.bur[el] ~= nil) then
+                    shown = shown + 1;
+                    local x, y = imgui.GetCursorScreenPos();
+                    local c = EL_COL[i - 1] or NONE_COL;
+                    dl:AddCircleFilled({ x + 6, y + lh2 / 2 + 1 }, 6, u32({ c[1], c[2], c[3], 0.22 }), 16);
+                    dl:AddCircleFilled({ x + 6, y + lh2 / 2 + 1 }, 4.5, u32({ c[1], c[2], c[3], 1 }), 16);
+                    dl:AddCircle({ x + 6, y + lh2 / 2 + 1 }, 4.5, u32({ 1, 1, 1, 0.22 }), 16, 1);
+                    local pct = string.format('%d%%', math.floor(math.min(v, 999) + 0.5));
+                    local pw = imgui.CalcTextSize(pct);
+                    dl:AddText({ x + ROW_W - pw, y }, u32(v >= 50 and { 1, 0.45, 0.5, 1 } or C.text), pct);
+                    glow_bar(dl, x + 20, y + lh2 / 2 - 1, ROW_W - 20 - pw - 10, 4, math.min(v, 100) / 100, c, { c[1] * 0.7 + 0.3, c[2] * 0.7 + 0.3, c[3] * 0.7 + 0.3 }, 3 + i);
+                    imgui.Dummy({ ROW_W, lh2 + 4 });
+                    if imgui.IsItemHovered() then tip(el .. ' maneuver overload chance (from the game, counted down since the last reading).'); end
+                end
+            end
+            if shown == 0 then imgui.TextColored(C.muted, st.pet and 'No overload risk' or 'No puppet out'); end
+            imgui.Spacing();
+            row_switch('##ph_olon', 'Overload set', 'ol_on', 'When your puppet overloads (every maneuver gone at once while there was a burden), switch to the set below until the burden is down.');
+            if cfg.ol_on then
+                row_pick('##ph_olset', 'Switch to', 'ol_set', { { 1, 'Set 1' }, { 2, 'Set 2' }, { 3, 'Set 3' } });
+                row_slider('##ph_olexit', 'Back when below', 'ol_exit', 0, 50, 1, function (v) return string.format('%d%%', v); end,
+                    'Go back to your set once every element is under this overload chance.');
+                row_slider('##ph_oltick', 'Seconds per degree', 'ol_tick', 1, 20, 1, function (v) return string.format('%ds', v); end,
+                    'How fast the burden is counted down between the game\'s readings. A Heatsink makes it faster, so lower this.');
+                if st.ol_active then imgui.TextColored(C.acc, 'Overload set is on'); end
+            end
+        end
 
         section('Automation');
         row_slider('##ph_rep', 'Auto Repair', 'repair', 0, 100, 1,
@@ -2080,8 +2194,21 @@ local function draw_mini()
     pv(ImGuiStyleVar_WindowRounding, 5 * k);
     pv(ImGuiStyleVar_WindowMinSize, { 1, 1 });                       -- (ImGui won't make a window smaller than 32 px otherwise)
     pv(ImGuiStyleVar_ItemSpacing, { 9 * k, 0 });
-    imgui.PushStyleColor(ImGuiCol_Border, st.enabled and { NEON2[1], NEON2[2], NEON2[3], 0.75 } or { 1, 1, 1, 0.08 });
+    local bcol = st.enabled and { NEON2[1], NEON2[2], NEON2[3], 0.75 } or { 1, 1, 1, 0.08 };
+    local od = is_overdriven();
+    if is_overloaded() then                                          -- overloaded: the outline flashes red
+        local f = 0.5 + 0.5 * math.sin(os.clock() * 9);
+        bcol = { 1, 0.15 + 0.1 * f, 0.2 + 0.1 * f, 0.35 + 0.65 * f };
+    elseif od then
+        bcol = { 1, 1, 1, 0 };                                       -- (the rainbow below is drawn instead)
+    end
+    imgui.PushStyleColor(ImGuiCol_Border, bcol);
     nc = nc + 1;
+    if is_overloaded() then                                          -- (and the whole bar pulses red with it)
+        local f = 0.5 + 0.5 * math.sin(os.clock() * 9);
+        imgui.PushStyleColor(ImGuiCol_WindowBg, { 0.10 + 0.55 * f, 0.03, 0.05, 0.96 });
+        nc = nc + 1;
+    end
     if imgui.Begin('PUPHQ##puphq_mini', { true }, WIN_FLAGS) then
         local dl = imgui.GetWindowDrawList();
 
@@ -2118,9 +2245,20 @@ local function draw_mini()
             local picking = (st.mini_pick == i);
             local col = EL_COL[slots[i]] or NONE_COL;
             local cx, cy = bx + bw / 2, by + bh / 2;
-            if EL_COL[slots[i]] then dl:AddCircleFilled({ cx, cy }, 4.5 * k, u32({ col[1], col[2], col[3], 0.22 }), 16); end
-            dl:AddCircleFilled({ cx, cy }, 3 * k, u32({ col[1], col[2], col[3], 1 }), 16);
-            dl:AddCircle({ cx, cy }, 3 * k, u32({ 1, 1, 1, 0.22 }), 16, 1);
+            -- burden: a slow pulse at 10 to 20%, then a faster one that wiggles and flashes, wilder the higher it goes
+            local grow, flash = 1, 0;
+            local bv = EL_COL[slots[i]] and burden_now(ELEMENTS[slots[i] + 1]) or 0;
+            if bv >= 10 then
+                local amp = (bv < 20) and (0.25 + 0.05 * (bv - 10)) or math.min(1, 0.75 + (bv - 20) / 60);
+                local tt = os.clock();
+                local pulse = math.sin(tt * (bv < 20 and 4 or (7 + 14 * amp)));
+                grow = 1 + 0.22 * amp * pulse;
+                flash = math.max(0, pulse) * amp * (bv < 20 and 0.35 or 0.7);
+                if bv >= 20 then cx = cx + math.sin(tt * (30 + 40 * amp)) * 1.6 * k * amp; cy = cy + math.cos(tt * (37 + 30 * amp)) * 0.8 * k * amp; end
+            end
+            if EL_COL[slots[i]] then dl:AddCircleFilled({ cx, cy }, 4.5 * k * grow, u32({ col[1], col[2], col[3], 0.22 + 0.2 * flash }), 16); end
+            dl:AddCircleFilled({ cx, cy }, 3 * k * grow, u32({ col[1] + (1 - col[1]) * flash, col[2] + (0.2 - col[2]) * flash * (bv >= 20 and 1 or 0), col[3] + (0.2 - col[3]) * flash * (bv >= 20 and 1 or 0), 1 }), 16);
+            dl:AddCircle({ cx, cy }, 3 * k * grow, u32({ 1, 1, 1, 0.22 }), 16, 1);
             if hov or picking then dl:AddCircle({ cx, cy }, 4.3 * k, u32({ 1, 1, 1, 0.55 }), 16, 1); end
             if hov and not st.mini_pick then
                 tip('Maneuver ' .. i .. ': ' .. (EL_COL[slots[i]] and ELEMENTS[slots[i] + 1] or 'None'));
@@ -2148,6 +2286,37 @@ local function draw_mini()
         dl:AddLine({ acx, acy - 1.5 * k }, { acx + 3 * k, acy + 1.5 * k }, uc, lw_);
         if uh then tip('Open the panel'); end
         if up then cfg.minimized = false; save(); end
+
+        if od then                                                    -- Overdrive: a rainbow that surges around the outline
+            local wx, wy = imgui.GetWindowPos();
+            local ww, wh = imgui.GetWindowSize();
+            local fdl = imgui.GetWindowDrawList();
+            local per = 2 * (ww + wh);
+            local n = 64;
+            local tt = os.clock();
+            local surge = 0.6 + 0.4 * math.sin(tt * 6);
+            local function pt(d)
+                d = d % per;
+                if d < ww then return wx + d, wy; end
+                d = d - ww; if d < wh then return wx + ww, wy + d; end
+                d = d - wh; if d < ww then return wx + ww - d, wy + wh; end
+                d = d - ww; return wx, wy + wh - d;
+            end
+            local function hue(h)
+                h = h % 1;
+                local r = math.max(0, math.min(1, math.abs(h * 6 - 3) - 1));
+                local g = math.max(0, math.min(1, 2 - math.abs(h * 6 - 2)));
+                local b = math.max(0, math.min(1, 2 - math.abs(h * 6 - 4)));
+                return r, g, b;
+            end
+            for j = 0, n - 1 do
+                local d0, d1 = per * j / n, per * (j + 1) / n;
+                local x0, y0 = pt(d0 + tt * per * 0.35);
+                local x1, y1 = pt(d1 + tt * per * 0.35);
+                local r, g, b = hue(j / n - tt * 0.5);
+                fdl:AddLine({ x0, y0 }, { x1, y1 }, u32({ r, g, b, 0.55 + 0.45 * surge }), 1.5 + 1.2 * surge);
+            end
+        end
 
         mini_picker(k);
         local mwx, mwy = imgui.GetWindowPos();                        -- (an unplaced bar is only remembered once it is dragged)
@@ -2181,6 +2350,38 @@ ashita.events.register('d3d_present', 'puphq_present', function ()
             draw_att();
             if st.preview then draw_mini(); end                      -- (the bar too, so it can be sized and placed)
         end
+    end
+end);
+
+ashita.events.register('text_in', 'puphq_text', function (e)
+    local msg = tostring(e.message or ''):gsub('[\30\31].', ''):gsub('[%c\127-\255]', '');
+    if st.dbg and (msg:lower():find('overload') or msg:find('Overdrive')) then
+        say(string.format('chat: [%s] me=[%s] pet=[%s]', msg, tostring(AshitaCore:GetMemoryManager():GetParty():GetMemberName(0)), st.pet and st.pet.name or 'none'));
+    end
+    -- the messages name you (the master); the puppet's own name is accepted too
+    local function mine(n)
+        if n == nil or st.pet == nil then return false; end
+        n = n:gsub('^%s+', ''):gsub('%s+$', ''):lower();
+        local me = tostring(AshitaCore:GetMemoryManager():GetParty():GetMemberName(0) or ''):lower();
+        return n == me or n == tostring(st.pet.name or ''):lower();
+    end
+    local el, pct = msg:match('(%a+) Maneuver overload chance is (%d+)%%');
+    if el ~= nil then
+        st.bur[el] = { pct = tonumber(pct) or 0, at = os.clock() };
+    end
+    -- "<pet>'s Overload effect wears off."
+    local owho = msg:match("^%s*(.-)'s Overload effect wears off");
+    if mine(owho) then st.ol_effect = false; st.ovl = nil; end
+    -- Overdrive: used (a minute of it), and the effect wearing off
+    if msg:find('Overdrive') then
+        if msg:find('wears off') then st.od = nil;
+        elseif msg:find(' uses Overdrive') or msg:find('effect of Overdrive') or msg:find('Overdrive effect') then st.od = os.clock() + 60; end
+    end
+    -- "<pet> is overloaded!"
+    local who = msg:match('^%s*(.-) is overloaded!');
+    if mine(who) then
+        st.ovl = os.clock();
+        pcall(overload_start, 'the game said so');
     end
 end);
 

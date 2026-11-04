@@ -16,6 +16,7 @@ Based on **Puphelper** by GetAwayCoxn, restyled after YunaUI. The attachment-set
 - Attachment sets: six sets with names, head and frame pickers with icons, a scrollable list of every
   attachment you have learned, affinity totals that stop you going over capacity, a one-click
   *Equip now* (deactivate, apply the set, reactivate), *Use current* and *Clear set*
+- Overload: a burden meter read from the game's overload-chance messages, an optional overload maneuver set, and red / rainbow effects on the minimized bar for Overload and Overdrive
 - Fully hidden when your main job is not PUP
 
 ## Install
@@ -32,6 +33,7 @@ Copy the `puphq` folder to `Ashita\addons\`, then in game:
 | `/puphq ad toggle` | toggle Auto Deploy |
 | `/puphq toggle` | enable or disable |
 | `/puphq manset next` / `prev` / `1` / `2` / `3` | change the maneuver set |
+| `/puphq debug` | show what Auto Repair sees and print each attempt (toggle) |
 
 ## Notes
 
