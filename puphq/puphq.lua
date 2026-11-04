@@ -80,7 +80,7 @@ local defaults = T{
     minimized = true, mini_scale = 1.0, mini_alpha = 1.0,
     main_h = 0,
     keep_zone = false,
-    ol_on = false, ol_set = 2, ol_exit = 0, ol_tick = 3,           -- overload set: on/off, which set, switch back below this chance, seconds per burden degree lost
+    ol_on = false, ol_set = 2, ol_exit = 0,                          -- overload set: on/off, which set, switch back below this chance
     mini_x = -1, mini_y = -1,                                        -- where the minimized bar sits (-1 = not placed yet)                              -- the minimized bar's size: 1x (smallest) to 3x
     cmds_open = false,
     oil_off = {},                                                    -- oil kinds ticked off (Auto Repair ignores them)
@@ -630,8 +630,10 @@ st.bur = {};                                                         -- [element
 local function burden_now(el)
     local b = st.bur[el];
     if b == nil then return 0; end
-    local per = math.max(1, tonumber(cfg.ol_tick) or 3);
-    return math.max(0, b.pct - (os.clock() - b.at) / per);           -- one degree (one % of chance) lost every `per` seconds
+    -- One degree (one % of chance) is lost every 3 seconds; a Heatsink in the attachments makes it 2 a tick, plus one more for
+    -- each Water Maneuver that is on
+    local per_tick = st.heat and (2 + (st.water_n or 0)) or 1;
+    return math.max(0, b.pct - (os.clock() - b.at) / 3 * per_tick);
 end
 
 -- Is the Overload effect on the puppet / Overdrive (set from the chat log; they time out in case a message is missed)
@@ -674,6 +676,21 @@ end
 
 local function overload_check(player)
     local total = maneuver_total(player);
+    -- Heatsink among the automaton's attachments, and how many Water Maneuvers are on (both make the burden fall faster)
+    local okp = pcall(read_pup, false);
+    local heat = false;
+    if okp then
+        for _, id in ipairs(PB.cur or {}) do
+            local inf = item_info(0x2100 + id);
+            if inf and inf.name == 'Heatsink' then heat = true; break; end
+        end
+    end
+    st.heat = heat;
+    local wn = 0;
+    for _, id in pairs(player:GetBuffs()) do
+        if id ~= nil and id > 0 and id ~= 255 and buff_name(id) == 'Water Maneuver' then wn = wn + 1; end
+    end
+    st.water_n = wn;
     if st.pet == nil then
         st.bur, st.ol_active, st.ol_total, st.ovl, st.od = {}, false, nil, nil, nil;   -- (no puppet, no burden)
         return;
@@ -1397,8 +1414,6 @@ local function draw_ui()
                 row_pick('##ph_olset', 'Switch to', 'ol_set', { { 1, 'Set 1' }, { 2, 'Set 2' }, { 3, 'Set 3' } });
                 row_slider('##ph_olexit', 'Back when below', 'ol_exit', 0, 50, 1, function (v) return string.format('%d%%', v); end,
                     'Go back to your set once every element is under this overload chance.');
-                row_slider('##ph_oltick', 'Seconds per degree', 'ol_tick', 1, 20, 1, function (v) return string.format('%ds', v); end,
-                    'How fast the burden is counted down between the game\'s readings. A Heatsink makes it faster, so lower this.');
                 if st.ol_active then imgui.TextColored(C.acc, 'Overload set is on'); end
             end
         end
