@@ -9,7 +9,7 @@ Based on **Puphelper** by GetAwayCoxn, restyled after YunaUI. The attachment-set
 ## Features
 
 - Auto Deploy, Auto Repair (by pet HP%) and Auto Maneuvers, paused while resting, asleep, stunned and so on
-- Three maneuver sets, switchable from the panel, the bar or by command
+- Maneuver sets that belong to each attachment set (add as many as you like with +, right click to remove), switchable from the panel, the bar or by command
 - Minimized bar: status light, Auto Deploy switch, maneuver circles you can click to change, set arrows,
   size and opacity options
 - Pet HP / MP / TP and an oil count (by kind) under the Auto Repair slider

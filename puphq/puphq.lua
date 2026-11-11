@@ -1,6 +1,6 @@
 addon.name      = 'PUPHQ';
 addon.author    = 'KS1985';
-addon.version   = '1.0.3';
+addon.version   = '1.0.4';
 addon.desc      = 'Puppetmaster control panel. Based on Puphelper by GetAwayCoxn, restyled after YunaUI (dark violet panel, pill choices, glowing bars).';
 addon.link      = 'https://github.com/QB1985/puphq';
 
@@ -89,15 +89,43 @@ local defaults = T{
 };
 local cfg = settings.load(defaults);
 settings.register('settings', 'puphq_settings', function(s) if s ~= nil then cfg = s; end end);
-local NSETS = 3;
+-- The maneuver sets belong to the attachment sets: every attachment set has its own list of maneuver sets (1, 2, 3 ... up to
+-- MAX_MSETS) and the one that is on. m1..m3 hold the maneuvers of the active attachment set's active maneuver set.
+local MAX_MSETS = 9;
+local function cur_aset()
+    if type(cfg.asets) ~= 'table' then cfg.asets = {}; end
+    local n = math.floor(tonumber(cfg.aset) or 1);
+    if n < 1 or n > 6 then n = 1; end
+    cfg.aset = n;
+    local s = cfg.asets[n];
+    if type(s) ~= 'table' then s = { head = 0, frame = 0, att = {} }; cfg.asets[n] = s; end
+    if type(s.sets) ~= 'table' or #s.sets == 0 then                  -- first time: it starts from the maneuver sets used before
+        s.sets = {};
+        for i = 1, 3 do
+            local t = type(cfg.sets) == 'table' and cfg.sets[i] or nil;
+            s.sets[i] = { t and t[1] or -1, t and t[2] or -1, t and t[3] or -1 };
+        end
+        s.mset = tonumber(cfg.set) or 1;
+    end
+    s.mset = math.max(1, math.min(#s.sets, math.floor(tonumber(s.mset) or 1)));
+    return s;
+end
+local function nsets() return #cur_aset().sets; end
+
 local function sync_sets()                                           -- what is on screen (m1..m3) belongs to the active set
-    if type(cfg.sets) ~= 'table' then cfg.sets = {}; end
-    local n = tonumber(cfg.set) or 1;
-    if n < 1 or n > NSETS then n = 1; end
-    cfg.set = n;
-    cfg.sets[n] = { cfg.m1, cfg.m2, cfg.m3 };
+    local s = cur_aset();
+    s.sets[s.mset] = { cfg.m1, cfg.m2, cfg.m3 };
+    cfg.set = s.mset;
 end
 local function save() sync_sets(); settings.save(); end
+
+local function load_maneuvers()                                      -- m1..m3 take the active set's maneuvers
+    local s = cur_aset();
+    local sl = s.sets[s.mset];
+    cfg.m1, cfg.m2, cfg.m3 = sl[1] or -1, sl[2] or -1, sl[3] or -1;
+    cfg.set = s.mset;
+end
+load_maneuvers();
 
 local function set_names(slots)
     local out = {};
@@ -108,19 +136,50 @@ local function set_names(slots)
     return table.concat(out, ', ');
 end
 local function set_summary(n)
-    if n == cfg.set then return set_names({ cfg.m1, cfg.m2, cfg.m3 }); end
-    return set_names(type(cfg.sets) == 'table' and cfg.sets[n] or nil);
+    local s = cur_aset();
+    if n == s.mset then return set_names({ cfg.m1, cfg.m2, cfg.m3 }); end
+    return set_names(s.sets[n]);
 end
 
--- Make set n (wraps around) the active one: m1..m3 take its maneuvers
+-- Make maneuver set n (wraps around) the active one: m1..m3 take its maneuvers
 local function switch_set(n)
     sync_sets();                                                     -- keep what the current set holds
-    n = ((math.floor(n) - 1) % NSETS) + 1;
-    cfg.set = n;
-    local sl = cfg.sets[n];
-    if type(sl) ~= 'table' then sl = { -1, -1, -1 }; end
-    cfg.m1, cfg.m2, cfg.m3 = sl[1] or -1, sl[2] or -1, sl[3] or -1;
+    local s = cur_aset();
+    s.mset = ((math.floor(n) - 1) % #s.sets) + 1;
+    load_maneuvers();
+    settings.save();
+end
+
+-- Another maneuver set (empty), and make it the active one
+local function add_mset()
     sync_sets();
+    local s = cur_aset();
+    if #s.sets >= MAX_MSETS then return false; end
+    s.sets[#s.sets + 1] = { -1, -1, -1 };
+    s.mset = #s.sets;
+    load_maneuvers();
+    settings.save();
+    return true;
+end
+
+-- Remove maneuver set i (there is always at least one left)
+local function remove_mset(i)
+    sync_sets();
+    local s = cur_aset();
+    if #s.sets <= 1 or i < 1 or i > #s.sets then return false; end
+    table.remove(s.sets, i);
+    if s.mset > i then s.mset = s.mset - 1; end
+    s.mset = math.max(1, math.min(#s.sets, s.mset));
+    load_maneuvers();
+    settings.save();
+    return true;
+end
+
+-- Make attachment set n the active one: its maneuver sets (and the one that was on) come with it
+local function select_aset(n)
+    sync_sets();                                                     -- keep what the old one holds
+    cfg.aset = n;
+    load_maneuvers();
     settings.save();
 end
 
@@ -667,7 +726,7 @@ local function overload_start(why)
     st.ovl = os.clock();                                             -- (the bar shows it whatever the settings)
     if not cfg.ol_on or st.ol_active then return; end
     local target = math.floor(tonumber(cfg.ol_set) or 2);
-    if target < 1 or target > NSETS then return; end
+    if target < 1 or target > nsets() then return; end
     st.ol_active, st.ol_prev = true, tonumber(cfg.set) or 1;
     st.ol_effect, st.ol_at = true, os.clock();                       -- (the Overload effect itself is on until the game says it wore off)
     if target ~= st.ol_prev then switch_set(target); end
@@ -1222,28 +1281,7 @@ local function pet_block(dl)
     imgui.Dummy({ ROW_W, cy - y + 2 });
 end
 
--- The maneuver set buttons (1 2 3) at the right of the MANEUVERS header
 local SET_BTN_W, SET_BTN_GAP = 24, 4;
-local function set_buttons(x, y, lh)
-    local ax, ay = imgui.GetCursorScreenPos();                       -- (where the layout goes on from)
-    local h = lh + 1;
-    local dl = imgui.GetWindowDrawList();
-    for i = 1, NSETS do
-        imgui.SetCursorScreenPos({ x + (i - 1) * (SET_BTN_W + SET_BTN_GAP), y });
-        local clicked = imgui.InvisibleButton('##ph_set' .. i, { SET_BTN_W, h });
-        local hov = imgui.IsItemHovered();
-        local on = (cfg.set == i);
-        local bx, by = x + (i - 1) * (SET_BTN_W + SET_BTN_GAP), y;
-        dl:AddRectFilled({ bx, by }, { bx + SET_BTN_W, by + h }, u32(on and { NEON[1] * 0.42, NEON[2] * 0.42, NEON[3] * 0.42, 1 } or (hov and { 0.15, 0.14, 0.19, 1 } or { 0.10, 0.09, 0.13, 1 })), h / 2);
-        dl:AddRect({ bx, by }, { bx + SET_BTN_W, by + h }, u32(on and { NEON2[1], NEON2[2], NEON2[3], 0.9 } or { 1, 1, 1, hov and 0.25 or 0.12 }), h / 2, C.rall, 1);
-        local label = tostring(i);
-        local tw, th = imgui.CalcTextSize(label);
-        dl:AddText({ bx + (SET_BTN_W - tw) / 2, by + (h - th) / 2 }, u32(on and { 1, 1, 1, 1 } or { 0.75, 0.73, 0.85, 1 }), label);
-        if hov then tip('Maneuver set ' .. i .. ': ' .. set_summary(i)); end
-        if clicked then switch_set(i); end
-    end
-    imgui.SetCursorScreenPos({ ax, ay });
-end
 
 -- The "Preview" checkbox at the right of the MINIMIZED header: shows the bar while this panel is open
 local function preview_check(x, y, lh)
@@ -1376,13 +1414,7 @@ local function draw_ui()
         local hit = header(dl);
         imgui.Spacing();
         pet_block(dl);
-
-        local sets_w = NSETS * SET_BTN_W + (NSETS - 1) * SET_BTN_GAP;
-        local hx, hy, hlh = section('Maneuvers', sets_w);
-        set_buttons(hx + ROW_W - sets_w, hy, hlh);
-        row_pick('##ph_m1', 'Maneuver 1', 'm1', MAN_OPTS, 'The first one. Auto Light below takes this slot over when your puppet is hurt.');
-        row_pick('##ph_m2', 'Maneuver 2', 'm2', MAN_OPTS);
-        row_pick('##ph_m3', 'Maneuver 3', 'm3', MAN_OPTS, 'Pick the same one twice (or three times) to keep two (or three) of it up.');
+        imgui.Spacing();
 
         do
             section('Overload');
@@ -1411,7 +1443,9 @@ local function draw_ui()
             imgui.Spacing();
             row_switch('##ph_olon', 'Overload set', 'ol_on', 'When your puppet overloads (every maneuver gone at once while there was a burden), switch to the set below until the burden is down.');
             if cfg.ol_on then
-                row_pick('##ph_olset', 'Switch to', 'ol_set', { { 1, 'Set 1' }, { 2, 'Set 2' }, { 3, 'Set 3' } });
+                local olopts = {};
+                for i = 1, nsets() do olopts[#olopts + 1] = { i, 'Set ' .. i }; end
+                row_pick('##ph_olset', 'Switch to', 'ol_set', olopts, 'A maneuver set of the active attachment set.');
                 row_slider('##ph_olexit', 'Back when below', 'ol_exit', 0, 50, 1, function (v) return string.format('%d%%', v); end,
                     'Go back to your set once every element is under this overload chance.');
                 if st.ol_active then imgui.TextColored(C.acc, 'Overload set is on'); end
@@ -1563,7 +1597,7 @@ local function aset_buttons()
         local tw, th = imgui.CalcTextSize(label);
         dl:AddText({ bx + (w - tw) / 2, y0 + (h - th) / 2 }, u32(on and { 1, 1, 1, 1 } or { 0.75, 0.73, 0.85, 1 }), label);
         if hov then tip(aset_summary(i)); end
-        if clicked then cfg.aset = i; save(); end
+        if clicked then select_aset(i); end
     end
     imgui.SetCursorScreenPos({ x0, y0 });
     imgui.Dummy({ ROW_W, h });
@@ -1640,6 +1674,109 @@ local function hf_pick(id, label, kind)
     end
     imgui.PopStyleColor(2);
     imgui.PopStyleVar(pv);
+end
+
+-- A maneuver's element pick: the circle and its name, and a list of the eight with their circles
+local function el_pick(id, label, key, hint)
+    local cur = cfg[key];
+    local lh = line_h();
+    local x0 = imgui.GetCursorPosX();
+    imgui.AlignTextToFramePadding();
+    imgui.TextColored(C.text, label);
+    local bw, bh = ROW_W - 110, imgui.GetFrameHeight();
+    imgui.SameLine(x0 + ROW_W - bw);
+    local bx, by = imgui.GetCursorScreenPos();
+    local clicked = imgui.InvisibleButton(id, { bw, bh });
+    local hov = imgui.IsItemHovered();
+    local dl = imgui.GetWindowDrawList();
+    dl:AddRectFilled({ bx, by }, { bx + bw, by + bh }, u32(hov and { 0.15, 0.14, 0.19, 1 } or { 0.10, 0.09, 0.13, 1 }), bh / 2);
+    dl:AddRect({ bx, by }, { bx + bw, by + bh }, u32(hov and { NEON2[1], NEON2[2], NEON2[3], 0.45 } or { 1, 1, 1, 0.10 }), bh / 2, C.rall, 1);
+    local has = (cur ~= nil and cur >= 0 and cur <= 7);
+    el_dot(dl, bx + 18, by + bh / 2, has and cur or nil, 4.5);
+    dl:AddText({ bx + 30, by + (bh - lh) / 2 }, u32(has and { 0.93, 0.92, 0.98, 1 } or C.muted), has and ELEMENTS[cur + 1] or 'None');
+    local ax, ay, r = bx + bw - 22, by + bh / 2, 4.5;
+    local ac = u32({ 0.85, 0.83, 0.95, hov and 1 or 0.75 });
+    dl:AddLine({ ax - r, ay - r * 0.5 }, { ax, ay + r * 0.5 }, ac, 1.5);
+    dl:AddLine({ ax, ay + r * 0.5 }, { ax + r, ay - r * 0.5 }, ac, 1.5);
+    if hov and hint then tip(hint); end
+    if clicked then imgui.OpenPopup(id .. '_list'); end
+
+    local pv = 0;
+    for _, v in ipairs({ { ImGuiStyleVar_WindowPadding, { 8, 8 } }, { ImGuiStyleVar_ItemSpacing, { 4, 2 } },
+                         { ImGuiStyleVar_PopupRounding, 8 }, { ImGuiStyleVar_PopupBorderSize, 1 } }) do
+        if v[1] ~= nil then imgui.PushStyleVar(v[1], v[2]); pv = pv + 1; end
+    end
+    imgui.PushStyleColor(ImGuiCol_PopupBg, { 0.055, 0.050, 0.075, 0.98 });
+    imgui.PushStyleColor(ImGuiCol_Border, { 1, 1, 1, 0.10 });
+    if imgui.BeginPopup(id .. '_list') then
+        safe(function ()
+            local rowh = lh + 10;
+            local pdl = imgui.GetWindowDrawList();
+            for v = -1, 7 do
+                local rx, ry = imgui.GetCursorScreenPos();
+                local pick = imgui.InvisibleButton(id .. '_r' .. v, { bw - 6, rowh });
+                local rhov = imgui.IsItemHovered();
+                if v == cur then pdl:AddRectFilled({ rx, ry }, { rx + bw - 6, ry + rowh }, u32({ 1, 1, 1, 0.12 }), 6);
+                elseif rhov then pdl:AddRectFilled({ rx, ry }, { rx + bw - 6, ry + rowh }, u32({ 1, 1, 1, 0.08 }), 6); end
+                el_dot(pdl, rx + 16, ry + rowh / 2, (v >= 0) and v or nil, 4.5);
+                pdl:AddText({ rx + 28, ry + (rowh - lh) / 2 }, u32(v >= 0 and { 0.93, 0.92, 0.98, 1 } or C.muted), v >= 0 and ELEMENTS[v + 1] or 'None');
+                if pick then
+                    cfg[key] = v;
+                    save();
+                    imgui.CloseCurrentPopup();
+                end
+            end
+        end);
+        imgui.EndPopup();
+    end
+    imgui.PopStyleColor(2);
+    imgui.PopStyleVar(pv);
+end
+
+-- The MANEUVERS part of the tab: the maneuver sets of the active attachment set (1 2 3 ..., + adds one, a right click removes
+-- one) and the three maneuvers of the one that is on
+local function maneuver_block()
+    local lh = line_h();
+    local dl = imgui.GetWindowDrawList();
+    imgui.Spacing(); imgui.Spacing();
+    local hx, hy = imgui.GetCursorScreenPos();
+    spaced(dl, hx, hy, 'MANEUVERS', u32({ 0.93, 0.90, 1.00, 1 }), 2.5);
+    local n = nsets();
+    local bw, gap, bh = 24, 4, lh + 1;
+    local count = n + ((n < MAX_MSETS) and 1 or 0);
+    local sx = hx + ROW_W - (count * bw + (count - 1) * gap);
+    local cur = cur_aset().mset;
+    for i = 1, count do
+        local plus = (i > n);
+        local bx = sx + (i - 1) * (bw + gap);
+        imgui.SetCursorScreenPos({ bx, hy });
+        local clicked = imgui.InvisibleButton('##ph_ms' .. i, { bw, bh });
+        local hov = imgui.IsItemHovered();
+        local rclick = imgui.IsItemClicked(1);
+        local on = (not plus) and (cur == i);
+        dl:AddRectFilled({ bx, hy }, { bx + bw, hy + bh }, u32(on and { NEON[1] * 0.42, NEON[2] * 0.42, NEON[3] * 0.42, 1 } or (hov and { 0.15, 0.14, 0.19, 1 } or { 0.10, 0.09, 0.13, 1 })), bh / 2);
+        dl:AddRect({ bx, hy }, { bx + bw, hy + bh }, u32(on and { NEON2[1], NEON2[2], NEON2[3], 0.9 } or { 1, 1, 1, hov and 0.25 or 0.12 }), bh / 2, C.rall, 1);
+        local label = plus and '+' or tostring(i);
+        local tw, th = imgui.CalcTextSize(label);
+        dl:AddText({ bx + (bw - tw) / 2, hy + (bh - th) / 2 }, u32(on and { 1, 1, 1, 1 } or { 0.75, 0.73, 0.85, 1 }), label);
+        if hov then
+            if plus then tip('Add a maneuver set');
+            else tip('Maneuver set ' .. i .. ': ' .. set_summary(i) .. '\nRight click to remove it.'); end
+        end
+        if plus then
+            if clicked then add_mset(); end
+        else
+            if clicked then switch_set(i); end
+            if rclick then
+                if not remove_mset(i) then st.att_msg, st.att_ok, st.att_at = 'There has to be at least one maneuver set.', false, os.clock(); end
+            end
+        end
+    end
+    imgui.SetCursorScreenPos({ hx, hy });
+    imgui.Dummy({ ROW_W, lh + 4 });
+    el_pick('##ph_m1', 'Maneuver 1', 'm1', 'The first one. Auto Light takes this slot over when your puppet is hurt.');
+    el_pick('##ph_m2', 'Maneuver 2', 'm2');
+    el_pick('##ph_m3', 'Maneuver 3', 'm3', 'Pick the same one twice (or three times) to keep two (or three) of it up.');
 end
 
 -- A refused tick: wiggle the box, flash it and the element's row in the affinity panel
@@ -2018,6 +2155,8 @@ local function draw_att()
                 if imgui.PopTextWrapPos then imgui.PopTextWrapPos(); end
             end
 
+            maneuver_block();
+
             att_list(s);
 
             -- the buttons
@@ -2128,7 +2267,7 @@ local function mini_chevron(id, dir, k)
         dl:AddLine({ cx + ox, cy }, { cx - ox, cy + oy }, col, lw);
     end
     if hov and not st.mini_pick then
-        local n = ((((tonumber(cfg.set) or 1) + dir) - 1) % NSETS) + 1;
+        local n = ((((tonumber(cfg.set) or 1) + dir) - 1) % nsets()) + 1;
         tip((dir < 0 and 'Previous set' or 'Next set') .. ' (' .. n .. '): ' .. set_summary(n));
     end
     return clicked;
@@ -2444,7 +2583,7 @@ ashita.events.register('command', 'puphq_command', function (e)
         local target = nil;
         if a == 'next' then target = cur + 1;
         elseif a == 'prev' or a == 'previous' then target = cur - 1;
-        elseif tonumber(a) ~= nil and tonumber(a) >= 1 and tonumber(a) <= NSETS then target = math.floor(tonumber(a)); end
+        elseif tonumber(a) ~= nil and tonumber(a) >= 1 and tonumber(a) <= nsets() then target = math.floor(tonumber(a)); end
         if target ~= nil then
             switch_set(target);
             print(chat.header(addon.name):append(chat.message(string.format('Maneuver set %d: %s', cfg.set, set_summary(cfg.set)))));
